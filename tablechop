@@ -31,10 +31,13 @@ def days_ago(tstamp):
 
 def get_bucket(args):
     try:
-        s3conn = boto.s3.connect_to_region(args.aws_region,
-                                           aws_access_key_id=args.key,
-                                           aws_secret_access_key=args.secret,
-                                           security_token=args.token)
+        s3conn = boto.connect_s3(host=args.s3_host,
+                                 port=args.s3_port,
+                                 is_secure=args.ssl,
+                                 calling_format=args.calling_format,
+                                 aws_access_key_id=args.key,
+                                 aws_secret_access_key=args.secret,
+                                 security_token=args.token)
         return s3conn.get_bucket(args.bucket)
     except boto.exception.BotoServerError, e:
         log.error('Problem initializing S3 connection: %s', e)
@@ -167,10 +170,12 @@ def main(log):
     parser.add_argument('--token',
         default=os.environ.get('AWS_SECURITY_TOKEN'),
         help='Amazon S3 Token (default from AWS_SECURITY_TOKEN in environment)')
-    parser.add_argument('--aws-region',
-        default='us-east-1',
-        choices=[region.name for region in boto.s3.regions()],
-        help='AWS region to connect to.')
+    parser.add_argument('--s3-host',
+        default='localhost')
+    parser.add_argument('--s3-port',
+        default=9000, type=int)
+    parser.add_argument('--ssl', action='store_true', default=False)
+    parser.add_argument('--calling-format', default='boto.s3.connection.OrdinaryCallingFormat')
     parser.add_argument(
         '-n',
         '--name',
