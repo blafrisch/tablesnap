@@ -49,19 +49,25 @@ def parse_clog(clog):
     return clog_regex.search(clog).group(1)
 
 
-def get_bucket(region, key, secret, token, bucket_name):
+def get_bucket(host, port, ssl, calling_format, key, secret, token, bucket_name):
 #   unsure if boto is thread-safe, will reconnect every time
     log.debug('Connecting to s3')
     if token:
-        conn = boto.s3.connect_to_region(region,
-                                         aws_access_key_id=key,
-                                         aws_secret_access_key=secret,
-                                         security_token=token)
+        conn = boto.connect_s3(host=host,
+                               port=port,
+                               is_secure=ssl,
+                               calling_format=calling_format,
+                               aws_access_key_id=key,
+                               aws_secret_access_key=secret,
+                               security_token=token)
     else:
-        conn = boto.s3.connect_to_region(region,
-                                         aws_access_key_id=key,
-                                         aws_secret_access_key=secret,
-                                         security_token=token)
+        conn = boto.connect_s3(host=host,
+                               port=port,
+                               is_secure=ssl,
+                               calling_format=calling_format,
+                               aws_access_key_id=key,
+                               aws_secret_access_key=secret,
+                               security_token=token)
 
     bucket = conn.get_bucket(bucket_name)
     log.debug('Connected to s3')
@@ -183,8 +189,11 @@ class DownloadHandler(object):
         self.preserve = args.preserve
         self.key = args.aws_key
         self.secret = args.aws_secret
-        self.region = args.aws_region
         self.token = args.token
+        self.host = args.s3_host
+        self.port = args.s3_port
+        self.ssl = args.ssl
+        self.calling_format = args.calling_format
         self.bucket_name = args.bucket[0]
         self.num_threads = args.threads
         self.force = args.force
@@ -209,7 +218,14 @@ class DownloadHandler(object):
                 (owner, group,))
 
     def _get_bucket(self):
-        return get_bucket(self.region, self.key, self.secret, self.token, self.bucket_name)
+        return get_bucket(self.host,
+                          self.port,
+                          self.ssl,
+                          self.calling_format,
+                          self.key,
+                          self.secret,
+                          self.token,
+                          self.bucket_name)
 
     def _check_metadata(self):
         bucket = self._get_bucket()
@@ -360,10 +376,12 @@ def main():
     ap.add_argument('--token',
         default=os.environ.get('AWS_SECURITY_TOKEN'),
         help='Amazon S3 Token (default from AWS_SECURITY_TOKEN in environment)')
-    ap.add_argument('--aws-region',
-        default='us-east-1',
-        choices=[region.name for region in boto.s3.regions()],
-        help='AWS region to connect to.')
+    ap.add_argument('--s3-host',
+        default='localhost')
+    ap.add_argument('--s3-port',
+        default=9000, type=int)
+    ap.add_argument('--ssl', action='store_true', default=False)
+    ap.add_argument('--calling-format', default='boto.s3.connection.OrdinaryCallingFormat')
     ap.add_argument('-p', '--preserve', default=False, action='store_true',
         help='Preserve the permissions (if they exist) from the source. '
         'This overrides -o and -g')
@@ -399,12 +417,19 @@ def main():
         help='Path in the local FS where files should be downloaded to')
     args = ap.parse_args()
 
-    prefix='%s:%s' % (args.name, args.origin[0])
-    bucket=get_bucket(args.aws_region, args.aws_key, args.aws_secret, args.token, args.bucket[0])
+    prefix = '%s:%s' % (args.name, args.origin[0])
+    bucket = get_bucket(args.s3_host,
+                        args.s3_port,
+                        args.ssl,
+                        args.calling_format,
+                        args.aws_key,
+                        args.aws_secret,
+                        args.token,
+                        args.bucket[0])
     log.info('Building fileset')
     if args.recursive:
-        table_to_files_mapping=build_recursive_fileset(bucket, prefix)
-        for table,fileset in table_to_files_mapping.iteritems():
+        table_to_files_mapping = build_recursive_fileset(bucket, prefix)
+        for table, fileset in table_to_files_mapping.iteritems():
             dh = DownloadHandler(args, target=os.path.join(args.target[0], table),
                                  prefix=os.path.join(prefix, table), fileset=fileset)
             dh.run()

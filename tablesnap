@@ -32,6 +32,7 @@ else:
 
 if os.environ.get('TDEBUG', False):
     default_log.setLevel(logging.DEBUG)
+    logging.getLogger('boto').setLevel(logging.DEBUG)
 else:
     default_log.setLevel(logging.INFO)
 
@@ -53,7 +54,8 @@ default_chunk_size = 256
 default_listen_events = ['IN_MOVED_TO', 'IN_CLOSE_WRITE']
 
 class UploadHandler(pyinotify.ProcessEvent):
-    def my_init(self, threads=None, key=None, secret=None, token=None, region=None,
+    def my_init(self, threads=None, key=None, secret=None, token=None, host=None, port=None, ssl=None,
+                calling_format=None,
                 bucket_name=None,
                 prefix=None, name=None, max_size=None, chunk_size=None,
                 include=None,
@@ -69,7 +71,10 @@ class UploadHandler(pyinotify.ProcessEvent):
         self.key = key
         self.secret = secret
         self.token = token
-        self.region = region
+        self.host = host
+        self.port = port
+        self.ssl = ssl
+        self.calling_format = calling_format
         self.bucket_name = bucket_name
         self.prefix = prefix
         self.name = name or socket.getfqdn()
@@ -114,16 +119,19 @@ class UploadHandler(pyinotify.ProcessEvent):
     def get_bucket(self):
         # Reconnect to S3
         if self.token:
-            s3 = boto.s3.connect_to_region(self.region,
-                                           aws_access_key_id=self.key,
-                                           aws_secret_access_key=self.secret,
-                                           security_token=self.token)
+            s3 = boto.connect_s3(host=self.host, port=self.port, is_secure=self.ssl,
+                                 calling_format=self.calling_format,
+                                 aws_access_key_id=self.key,
+                                 aws_secret_access_key=self.secret,
+                                 security_token=self.token)
         elif self.key and self.secret:
-            s3 = boto.s3.connect_to_region(self.region,
-                                           aws_access_key_id=self.key,
-                                           aws_secret_access_key=self.secret)
+            s3 = boto.connect_s3(host=self.host, port=self.port, is_secure=self.ssl,
+                                 calling_format=self.calling_format,
+                                 aws_access_key_id=self.key,
+                                 aws_secret_access_key=self.secret)
         else:
-            s3 = boto.s3.connect_to_region(self.region)
+            s3 = boto.connect_s3(host=self.host, port=self.port, is_secure=self.ssl,
+                                 calling_format=self.calling_format)
 
         return s3.get_bucket(self.bucket_name)
 
@@ -324,11 +332,16 @@ class UploadHandler(pyinotify.ProcessEvent):
                 for r in range(self.retries):
                     try:
                         key = bucket.new_key('%s-listdir.json' % keyname)
-                        key.set_contents_from_string(json_str,
-                            headers={'Content-Type': 'application/json'},
-                            replace=True,
-                            reduced_redundancy=self.reduced_redundancy,
-                            encrypt_key=self.with_sse)
+                        try:
+                            key.set_contents_from_string(json_str,
+                                headers={'Content-Type': 'application/json'},
+                                replace=True,
+                                reduced_redundancy=self.reduced_redundancy,
+                                encrypt_key=self.with_sse)
+                        except boto.exception.S3DataError:
+                            # minio doesn't return MD5 in ETag which makes boto's MD5 verification after upload fail
+                            default_log.debug("Boto upload failed due to MD5 verification")
+                            pass
                         break
                     except:
                         if r == self.retries - 1:
@@ -397,11 +410,16 @@ class UploadHandler(pyinotify.ProcessEvent):
                         key = bucket.new_key(keyname)
                         key.set_metadata('stat', meta)
                         key.set_metadata('md5sum', md5[0])
-                        key.set_contents_from_filename(filename, replace=True,
-                                                       cb=progress, num_cb=1,
-                                                       md5=md5,
-                                                       reduced_redundancy=self.reduced_redundancy,
-                                                       encrypt_key=self.with_sse)
+                        try:
+                            key.set_contents_from_filename(filename, replace=True,
+                                                           cb=progress, num_cb=1,
+                                                           md5=md5,
+                                                           reduced_redundancy=self.reduced_redundancy,
+                                                           encrypt_key=self.with_sse)
+                        except boto.exception.S3DataError:
+                            # minio doesn't return MD5 in ETag which makes boto's MD5 verification after upload fail
+                            default_log.debug("Boto upload failed due to MD5 verification")
+                            pass
                         delete_if_enabled()
                     break
                 except:
@@ -472,10 +490,12 @@ def main():
     parser.add_argument('-s', '--aws-secret',
         default=os.environ.get('AWS_SECRET_ACCESS_KEY'),
         help='Amazon S3 Secret (default from AWS_SECRET_ACCESS_KEY in environment)')
-    parser.add_argument('--aws-region',
-        default='us-east-1',
-        choices=[region.name for region in boto.s3.regions()],
-        help='AWS region to connect to.')
+    parser.add_argument('--s3-host',
+        default='localhost')
+    parser.add_argument('--s3-port',
+        default=9000, type=int)
+    parser.add_argument('--ssl', action='store_true', default=False)
+    parser.add_argument('--calling-format', default='boto.s3.connection.OrdinaryCallingFormat')
     parser.add_argument('--aws-token',
         default=os.environ.get('AWS_SECURITY_TOKEN'),
         help='Amazon S3 Token (default from AWS_SECURITY_TOKEN in environment)')
@@ -548,22 +568,36 @@ def main():
     # potential thread-safety problems.
 
     if args.aws_token:
-        s3 = boto.s3.connect_to_region(args.aws_region,
-                                       aws_access_key_id=args.aws_key,
-                                       aws_secret_access_key=args.aws_secret,
-                                       security_token=args.aws_token)
+        s3 = boto.connect_s3(aws_access_key_id=args.aws_key,
+                             aws_secret_access_key=args.aws_secret,
+                             host=args.s3_host,
+                             port=args.s3_port,
+                             security_token=args.aws_token,
+                             is_secure=args.ssl,
+                             calling_format=args.calling_format)
     elif args.aws_key and args.aws_secret:
-        s3 = boto.s3.connect_to_region(args.aws_region,
-                                       aws_access_key_id=args.aws_key,
-                                       aws_secret_access_key=args.aws_secret)
+        s3 = boto.connect_s3(aws_access_key_id=args.aws_key,
+                             aws_secret_access_key=args.aws_secret,
+                             host=args.s3_host,
+                             port=args.s3_port,
+                             is_secure=args.ssl,
+                             calling_format=args.calling_format)
     else:
-        s3 = boto.s3.connect_to_region(args.aws_region)
+        s3 = boto.connect_s3(host=args.s3_host,
+                             port=args.s3_port,
+                             is_secure=args.ssl,
+                             calling_format=args.calling_format)
 
     bucket = s3.get_bucket(args.bucket)
+    default_log.info("bucket: %s", bucket)
 
-    handler = UploadHandler(threads=args.threads, key=args.aws_key,
-                            secret=args.aws_secret, token=args.aws_token,
-                            region=args.aws_region,
+    handler = UploadHandler(threads=args.threads,
+                            key=args.aws_key,
+                            secret=args.aws_secret,
+                            host=args.s3_host,
+                            port=args.s3_port,
+                            ssl=args.ssl,
+                            calling_format=args.calling_format,
                             bucket_name=bucket,
                             prefix=args.prefix, name=args.name,
                             include=include,
