@@ -372,15 +372,10 @@ class UploadHandler(pyinotify.ProcessEvent):
 
             for r in range(self.retries):
                 try:
+                    self.log.debug('File size check: %s > %s ? : %s' %
+                        (stat.st_size, self.max_size,
+                        (stat.st_size > self.max_size),))
                     if stat.st_size > self.max_size:
-                        self.log.error("Exceeded max file size: %s > %s")
-                        raise
-                    else:
-                        self.log.debug("File size okay: %s < %s",
-                                       stat.st_size,
-                                       self.max_size)
-                    self.log.debug('Chunking: %s', (stat.st_size > self.chunk_size))
-                    if stat.st_size > self.chunk_size:
                         self.log.info('Performing multipart upload for %s' %
                                      (filename))
                         mp = bucket.initiate_multipart_upload(keyname,
